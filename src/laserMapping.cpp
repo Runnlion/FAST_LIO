@@ -1060,6 +1060,68 @@ private:
 
             double t_update_end = omp_get_wtime();
 
+            /*** Print ESIKF updated covariance P for degradation analysis ***/
+            {
+                auto P = kf.get_P();  // 23x23 covariance matrix
+
+                // Position covariance sub-block P_pos (indices 0-2)
+                Eigen::Matrix3d P_pos = P.block<3, 3>(0, 0);
+                // Rotation covariance sub-block P_rot (indices 3-5)
+                Eigen::Matrix3d P_rot = P.block<3, 3>(3, 3);
+
+                // Eigendecomposition of position covariance -> degradation direction
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> pos_solver(P_pos);
+                Eigen::Vector3d pos_eigenvalues = pos_solver.eigenvalues();    // ascending order
+                Eigen::Matrix3d pos_eigenvectors = pos_solver.eigenvectors();  // columns = eigenvectors
+
+                // Eigendecomposition of rotation covariance
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> rot_solver(P_rot);
+                Eigen::Vector3d rot_eigenvalues = rot_solver.eigenvalues();
+                Eigen::Matrix3d rot_eigenvectors = rot_solver.eigenvectors();
+
+                double pos_cond = pos_eigenvalues(2) / std::max(pos_eigenvalues(0), 1e-15);
+                double rot_cond = rot_eigenvalues(2) / std::max(rot_eigenvalues(0), 1e-15);
+                double pos_max_eigval = pos_eigenvalues(2);
+                double rot_max_eigval = rot_eigenvalues(2);
+
+                // Degradation thresholds (tuned from typical run data)
+                const double POS_COND_THRESH    = 5.0;   // position condition number
+                const double ROT_COND_THRESH    = 5.0;   // rotation condition number
+                const double POS_EIGVAL_THRESH  = 4e-5;  // position max eigenvalue
+                const double ROT_EIGVAL_THRESH  = 1.5e-6; // rotation max eigenvalue
+
+                bool pos_cond_deg   = pos_cond > POS_COND_THRESH;
+                bool rot_cond_deg   = rot_cond > ROT_COND_THRESH;
+                bool pos_eigval_deg = pos_max_eigval > POS_EIGVAL_THRESH;
+                bool rot_eigval_deg = rot_max_eigval > ROT_EIGVAL_THRESH;
+                bool is_degraded    = pos_cond_deg || rot_cond_deg || pos_eigval_deg || rot_eigval_deg;
+
+                if (is_degraded) {
+                    printf("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+                    printf("!!  [WARNING] DEGRADATION DETECTED !!\n");
+                    if (pos_cond_deg)
+                        printf("!!  Pos condition number: %.2f > %.1f  --  directional position constraint lost\n",
+                               pos_cond, POS_COND_THRESH);
+                    if (pos_eigval_deg)
+                        printf("!!  Pos max eigenvalue: %e > %e  --  overall position uncertainty too large\n",
+                               pos_max_eigval, POS_EIGVAL_THRESH);
+                    if (rot_cond_deg)
+                        printf("!!  Rot condition number: %.2f > %.1f  --  directional rotation constraint lost\n",
+                               rot_cond, ROT_COND_THRESH);
+                    if (rot_eigval_deg)
+                        printf("!!  Rot max eigenvalue: %e > %e  --  overall rotation uncertainty too large\n",
+                               rot_max_eigval, ROT_EIGVAL_THRESH);
+                    Eigen::Vector3d deg_dir = pos_eigval_deg || pos_cond_deg ?
+                        pos_eigenvectors.col(2) : rot_eigenvectors.col(2);
+                    printf("!!  Degraded direction (world): [%.3f, %.3f, %.3f]\n",
+                           deg_dir(0), deg_dir(1), deg_dir(2));
+                    printf("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n");
+                } else {
+                    printf("[ degr ]: OK | pos_cond=%.2f  rot_cond=%.2f  pos_eig=%e  rot_eig=%e\n",
+                           pos_cond, rot_cond, pos_max_eigval, rot_max_eigval);
+                }
+            }
+
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
 
